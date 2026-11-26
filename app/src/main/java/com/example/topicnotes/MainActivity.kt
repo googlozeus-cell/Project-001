@@ -738,7 +738,6 @@ fun TopicNotesScreen(storageFile: File) {
         }
     }
 
-    // Подсказка по точным будильникам / настройкам
     if (showExactAlarmPrompt) {
         AlertDialog(
             onDismissRequest = { showExactAlarmPrompt = false },
@@ -763,7 +762,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Диалог новой темы
     if (showAddTopicDialog) {
         TopicFormDialog(
             dialogTitle = "Новая тема",
@@ -788,7 +786,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Редактирование темы
     if (editingTopic != null) {
         val target = editingTopic!!
         TopicFormDialog(
@@ -805,7 +802,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Удаление темы
     if (topicToDelete != null) {
         val target = topicToDelete!!
         AlertDialog(
@@ -828,7 +824,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Новая подкатегория
     if (showAddSubDialog && currentTopic != null) {
         SubcategoryFormDialog(
             dialogTitle = "Новая подкатегория",
@@ -848,7 +843,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Редактирование подкатегории
     if (editingSub != null && currentTopic != null) {
         val target = editingSub!!
         SubcategoryFormDialog(
@@ -871,7 +865,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Удаление подкатегории
     if (subToDelete != null && currentTopic != null) {
         val target = subToDelete!!
         AlertDialog(
@@ -897,7 +890,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Редактирование заметки
     if (editingNote != null && currentTopic != null && currentSub != null) {
         val target = editingNote!!
         var editText by remember(target.id) { mutableStateOf(target.text) }
@@ -964,7 +956,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Подтверждение удаления заметки
     if (noteToDelete != null) {
         val target = noteToDelete!!
         AlertDialog(
@@ -995,7 +986,6 @@ fun TopicNotesScreen(storageFile: File) {
         )
     }
 
-    // Выбор даты напоминания
     if (pickDateForNote) {
         val datePickerState = rememberDatePickerState(
             initialSelectedDateMillis = draftReminder ?: System.currentTimeMillis()
@@ -1017,7 +1007,6 @@ fun TopicNotesScreen(storageFile: File) {
         }
     }
 
-    // Выбор времени: барабан часов (0..23) и всех минут (0..59) с прокруткой вверх/вниз
     if (pendingTimeDialogMillis != null) {
         val baseDateMillis = pendingTimeDialogMillis!!
         val initCal = Calendar.getInstance().apply {
@@ -1046,8 +1035,8 @@ fun TopicNotesScreen(storageFile: File) {
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         WheelNumberPicker(
-                            minValue = 0,
-                            maxValue = 23,
+                            minVal = 0,
+                            maxVal = 23,
                             value = selectedHour,
                             onValueChange = { selectedHour = it }
                         )
@@ -1057,8 +1046,8 @@ fun TopicNotesScreen(storageFile: File) {
                             modifier = Modifier.padding(horizontal = 12.dp)
                         )
                         WheelNumberPicker(
-                            minValue = 0,
-                            maxValue = 59,
+                            minVal = 0,
+                            maxVal = 59,
                             value = selectedMinute,
                             onValueChange = { selectedMinute = it }
                         )
@@ -1095,22 +1084,24 @@ fun TopicNotesScreen(storageFile: File) {
 
 @Composable
 private fun WheelNumberPicker(
-    minValue: Int,
-    maxValue: Int,
+    minVal: Int,
+    maxVal: Int,
     value: Int,
     onValueChange: (Int) -> Unit
 ) {
     AndroidView(
         factory = { ctx ->
             NumberPicker(ctx).apply {
-                minValue = this@WheelNumberPicker.minValue
-                maxValue = this@WheelNumberPicker.maxValue
+                minValue = minVal
+                maxValue = maxVal
                 wrapSelectorWheel = true
                 setFormatter { i -> String.format(Locale.getDefault(), "%02d", i) }
                 setOnValueChangedListener { _, _, newVal -> onValueChange(newVal) }
             }
         },
         update = { picker ->
+            picker.minValue = minVal
+            picker.maxValue = maxVal
             if (picker.value != value) {
                 picker.value = value
             }
