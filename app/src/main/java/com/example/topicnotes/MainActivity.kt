@@ -11,9 +11,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.AlarmClock
+import android.provider.Settings
+import android.widget.NumberPicker
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -24,7 +27,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.PushPin
@@ -32,13 +34,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -97,36 +99,55 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val title = intent.getStringExtra("extra_title") ?: "Напоминание из «Моих заметок»"
         val body = intent.getStringExtra("extra_body") ?: ""
-        val notifId = intent.getIntExtra("extra_notif_id", (System.currentTimeMillis() % Int.MAX_VALUE).toInt())
-
-        ensureNotificationChannel(context)
-
-        val openIntent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            context,
-            notifId,
-            openIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        val notifId = intent.getIntExtra(
+            "extra_notif_id",
+            (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
         )
 
-        val builder = NotificationCompat.Builder(context, REMINDER_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_popup_reminder)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
+        showNoteNotification(context, title, body, notifId)
+    }
+}
 
-        val hasPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
+fun showNoteNotification(
+    context: Context,
+    title: String,
+    body: String,
+    notifId: Int = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
+) {
+    ensureNotificationChannel(context)
 
-        if (hasPermission) {
+    val openIntent = Intent(context, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    }
+    val pendingIntent = PendingIntent.getActivity(
+        context,
+        notifId,
+        openIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    )
+
+    val builder = NotificationCompat.Builder(context, REMINDER_CHANNEL_ID)
+        .setSmallIcon(android.R.drawable.ic_popup_reminder)
+        .setContentTitle(title)
+        .setContentText(body)
+        .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+        .setPriority(NotificationCompat.PRIORITY_HIGH)
+        .setCategory(NotificationCompat.CATEGORY_ALARM)
+        .setAutoCancel(true)
+        .setContentIntent(pendingIntent)
+
+    val hasPermission = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED
+
+    if (hasPermission) {
+        try {
             NotificationManagerCompat.from(context).notify(notifId, builder.build())
+        } catch (_: SecurityException) {
+            Toast.makeText(context, "Нет разрешения на показ уведомлений", Toast.LENGTH_SHORT).show()
         }
+    } else {
+        Toast.makeText(context, "Включите разрешение на уведомления в настройках", Toast.LENGTH_LONG).show()
     }
 }
 
@@ -138,17 +159,55 @@ fun ensureNotificationChannel(context: Context) {
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
             description = "Уведомления по дате и времени из приложения «Мои заметки»"
+            enableVibration(true)
         }
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(channel)
     }
 }
 
-fun scheduleNoteReminder(context: Context, note: NoteItem, topicTitle: String, subName: String) {
-    val triggerAt = note.reminderAt ?: return
-    if (triggerAt <= System.currentTimeMillis()) return
+fun canScheduleExactAlarmsSafe(context: Context): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    return alarmManager.canScheduleExactAlarms()
+}
 
+fun openExactAlarmSettings(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        try {
+            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                data = Uri.parse("package:${context.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            return
+        } catch (_: Exception) {
+        }
+    }
+    openAppSettings(context)
+}
+
+fun openAppSettings(context: Context) {
+    try {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.parse("package:${context.packageName}")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        Toast.makeText(context, "Откройте настройки приложения вручную", Toast.LENGTH_SHORT).show()
+    }
+}
+
+fun scheduleNoteReminder(
+    context: Context,
+    note: NoteItem,
+    topicTitle: String,
+    subName: String
+): Boolean {
+    val triggerAt = note.reminderAt ?: return false
     ensureNotificationChannel(context)
+
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
     val reqCode = note.id.hashCode()
 
@@ -165,14 +224,28 @@ fun scheduleNoteReminder(context: Context, note: NoteItem, topicTitle: String, s
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
 
-    try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
-            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+    val safeTime = if (triggerAt <= System.currentTimeMillis()) {
+        System.currentTimeMillis() + 2000L
+    } else {
+        triggerAt
+    }
+
+    return try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (alarmManager.canScheduleExactAlarms()) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, safeTime, pendingIntent)
+                true
+            } else {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, safeTime, pendingIntent)
+                false
+            }
         } else {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, safeTime, pendingIntent)
+            true
         }
     } catch (_: SecurityException) {
-        alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+        alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, safeTime, pendingIntent)
+        false
     }
 }
 
@@ -211,7 +284,15 @@ class MainActivity : ComponentActivity() {
 
     private val requestNotifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { }
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(
+                this,
+                "Уведомления отключены. Включите их в настройках приложения.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -268,6 +349,7 @@ fun TopicNotesScreen(storageFile: File) {
 
     var pickDateForNote by remember { mutableStateOf(false) }
     var pendingTimeDialogMillis by remember { mutableStateOf<Long?>(null) }
+    var showExactAlarmPrompt by remember { mutableStateOf(false) }
 
     fun persist(updated: List<Topic>) {
         topics = updated
@@ -493,7 +575,21 @@ fun TopicNotesScreen(storageFile: File) {
                                     }
                                     persist(updated)
                                     if (newNote.reminderAt != null) {
-                                        scheduleNoteReminder(context, newNote, currentTopic.title, currentSub.name)
+                                        val exactOk = scheduleNoteReminder(
+                                            context,
+                                            newNote,
+                                            currentTopic.title,
+                                            currentSub.name
+                                        )
+                                        if (!exactOk) {
+                                            showExactAlarmPrompt = true
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "Напоминание задано на ${formatTimestamp(newNote.reminderAt)}",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
                                     }
                                     noteText = ""
                                     draftReminder = null
@@ -640,6 +736,31 @@ fun TopicNotesScreen(storageFile: File) {
                 }
             }
         }
+    }
+
+    // Подсказка по точным будильникам / настройкам
+    if (showExactAlarmPrompt) {
+        AlertDialog(
+            onDismissRequest = { showExactAlarmPrompt = false },
+            title = { Text("Разрешение на точные напоминания") },
+            text = {
+                Text(
+                    "Чтобы уведомления приходили точно по времени, разрешите «Будильники и напоминания» и «Уведомления» в настройках приложения."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExactAlarmPrompt = false
+                    openExactAlarmSettings(context)
+                }) { Text("Настройки будильников") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showExactAlarmPrompt = false
+                    openAppSettings(context)
+                }) { Text("Все настройки") }
+            }
+        )
     }
 
     // Диалог новой темы
@@ -823,7 +944,13 @@ fun TopicNotesScreen(storageFile: File) {
                         val updatedNote = target.copy(text = clean, reminderAt = editReminder)
                         updateNoteInState(target.id) { updatedNote }
                         if (updatedNote.reminderAt != null) {
-                            scheduleNoteReminder(context, updatedNote, currentTopic.title, currentSub.name)
+                            val exactOk = scheduleNoteReminder(
+                                context,
+                                updatedNote,
+                                currentTopic.title,
+                                currentSub.name
+                            )
+                            if (!exactOk) showExactAlarmPrompt = true
                         } else {
                             cancelNoteReminder(context, target.id)
                         }
@@ -890,20 +1017,59 @@ fun TopicNotesScreen(storageFile: File) {
         }
     }
 
-    // Выбор времени напоминания
+    // Выбор времени: барабан часов (0..23) и всех минут (0..59) с прокруткой вверх/вниз
     if (pendingTimeDialogMillis != null) {
         val baseDateMillis = pendingTimeDialogMillis!!
-        val calNow = Calendar.getInstance()
-        val timePickerState = rememberTimePickerState(
-            initialHour = calNow.get(Calendar.HOUR_OF_DAY),
-            initialMinute = calNow.get(Calendar.MINUTE),
-            is24Hour = true
-        )
+        val initCal = Calendar.getInstance().apply {
+            if (draftReminder != null) timeInMillis = draftReminder!!
+        }
+        var selectedHour by remember { mutableIntStateOf(initCal.get(Calendar.HOUR_OF_DAY)) }
+        var selectedMinute by remember { mutableIntStateOf(initCal.get(Calendar.MINUTE)) }
 
         AlertDialog(
             onDismissRequest = { pendingTimeDialogMillis = null },
-            title = { Text("Выберите время напоминания") },
-            text = { TimePicker(state = timePickerState) },
+            title = { Text("Выберите время") },
+            text = {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = String.format(Locale.getDefault(), "%02d:%02d", selectedHour, selectedMinute),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        WheelNumberPicker(
+                            minValue = 0,
+                            maxValue = 23,
+                            value = selectedHour,
+                            onValueChange = { selectedHour = it }
+                        )
+                        Text(
+                            ":",
+                            style = MaterialTheme.typography.headlineSmall,
+                            modifier = Modifier.padding(horizontal = 12.dp)
+                        )
+                        WheelNumberPicker(
+                            minValue = 0,
+                            maxValue = 59,
+                            value = selectedMinute,
+                            onValueChange = { selectedMinute = it }
+                        )
+                    }
+                    Text(
+                        "Прокручивайте цифры вверх или вниз (минуты 00–59)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
             confirmButton = {
                 TextButton(onClick = {
                     val dateCal = Calendar.getInstance().apply { timeInMillis = baseDateMillis }
@@ -911,8 +1077,8 @@ fun TopicNotesScreen(storageFile: File) {
                         set(Calendar.YEAR, dateCal.get(Calendar.YEAR))
                         set(Calendar.MONTH, dateCal.get(Calendar.MONTH))
                         set(Calendar.DAY_OF_MONTH, dateCal.get(Calendar.DAY_OF_MONTH))
-                        set(Calendar.HOUR_OF_DAY, timePickerState.hour)
-                        set(Calendar.MINUTE, timePickerState.minute)
+                        set(Calendar.HOUR_OF_DAY, selectedHour)
+                        set(Calendar.MINUTE, selectedMinute)
                         set(Calendar.SECOND, 0)
                         set(Calendar.MILLISECOND, 0)
                     }
@@ -925,6 +1091,32 @@ fun TopicNotesScreen(storageFile: File) {
             }
         )
     }
+}
+
+@Composable
+private fun WheelNumberPicker(
+    minValue: Int,
+    maxValue: Int,
+    value: Int,
+    onValueChange: (Int) -> Unit
+) {
+    AndroidView(
+        factory = { ctx ->
+            NumberPicker(ctx).apply {
+                minValue = this@WheelNumberPicker.minValue
+                maxValue = this@WheelNumberPicker.maxValue
+                wrapSelectorWheel = true
+                setFormatter { i -> String.format(Locale.getDefault(), "%02d", i) }
+                setOnValueChangedListener { _, _, newVal -> onValueChange(newVal) }
+            }
+        },
+        update = { picker ->
+            if (picker.value != value) {
+                picker.value = value
+            }
+        },
+        modifier = Modifier.width(84.dp)
+    )
 }
 
 @Composable
