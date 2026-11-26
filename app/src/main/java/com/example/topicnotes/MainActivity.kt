@@ -19,14 +19,19 @@ import android.provider.Settings
 import android.widget.NumberPicker
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.PushPin
@@ -34,12 +39,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -79,12 +87,14 @@ data class NoteItem(
     val createdAt: Long,
     val isDone: Boolean = false,
     val isPinned: Boolean = false,
-    val reminderAt: Long? = null
+    val reminderAt: Long? = null,
+    val imageFileName: String? = null
 )
 
 data class Subcategory(
     val id: String,
     val name: String,
+    val imageFileName: String? = null,
     val notes: List<NoteItem> = emptyList()
 )
 
@@ -92,6 +102,7 @@ data class Topic(
     val id: String,
     val title: String,
     val iconType: TopicIconType,
+    val imageFileName: String? = null,
     val subcategories: List<Subcategory>
 )
 
@@ -103,7 +114,6 @@ class ReminderReceiver : BroadcastReceiver() {
             "extra_notif_id",
             (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
         )
-
         showNoteNotification(context, title, body, notifId)
     }
 }
@@ -115,7 +125,6 @@ fun showNoteNotification(
     notifId: Int = (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
 ) {
     ensureNotificationChannel(context)
-
     val openIntent = Intent(context, MainActivity::class.java).apply {
         flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
     }
@@ -125,7 +134,6 @@ fun showNoteNotification(
         openIntent,
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     )
-
     val builder = NotificationCompat.Builder(context, REMINDER_CHANNEL_ID)
         .setSmallIcon(android.R.drawable.ic_popup_reminder)
         .setContentTitle(title)
@@ -144,10 +152,7 @@ fun showNoteNotification(
         try {
             NotificationManagerCompat.from(context).notify(notifId, builder.build())
         } catch (_: SecurityException) {
-            Toast.makeText(context, "Нет разрешения на показ уведомлений", Toast.LENGTH_SHORT).show()
         }
-    } else {
-        Toast.makeText(context, "Включите разрешение на уведомления в настройках", Toast.LENGTH_LONG).show()
     }
 }
 
@@ -164,12 +169,6 @@ fun ensureNotificationChannel(context: Context) {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(channel)
     }
-}
-
-fun canScheduleExactAlarmsSafe(context: Context): Boolean {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
-    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-    return alarmManager.canScheduleExactAlarms()
 }
 
 fun openExactAlarmSettings(context: Context) {
@@ -207,7 +206,6 @@ fun scheduleNoteReminder(
 ): Boolean {
     val triggerAt = note.reminderAt ?: return false
     ensureNotificationChannel(context)
-
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
     val reqCode = note.id.hashCode()
 
@@ -281,18 +279,9 @@ fun openSystemAlarm(context: Context, timeMillis: Long?, message: String) {
 }
 
 class MainActivity : ComponentActivity() {
-
     private val requestNotifPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) {
-            Toast.makeText(
-                this,
-                "Уведомления отключены. Включите их в настройках приложения.",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -335,6 +324,8 @@ fun TopicNotesScreen(storageFile: File) {
 
     var noteText by remember { mutableStateOf("") }
     var draftReminder by remember { mutableStateOf<Long?>(null) }
+    var draftNoteImage by remember { mutableStateOf<String?>(null) }
+    var showQipPanel by remember { mutableStateOf(false) }
 
     var showAddTopicDialog by remember { mutableStateOf(false) }
     var editingTopic by remember { mutableStateOf<Topic?>(null) }
@@ -346,10 +337,23 @@ fun TopicNotesScreen(storageFile: File) {
 
     var editingNote by remember { mutableStateOf<NoteItem?>(null) }
     var noteToDelete by remember { mutableStateOf<NoteItem?>(null) }
+    var fullscreenImageName by remember { mutableStateOf<String?>(null) }
 
     var pickDateForNote by remember { mutableStateOf(false) }
     var pendingTimeDialogMillis by remember { mutableStateOf<Long?>(null) }
     var showExactAlarmPrompt by remember { mutableStateOf(false) }
+
+    val draftPhotoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val saved = LocalMediaStorage.copyAndCompressImage(context, uri, 1280)
+            if (saved != null) {
+                LocalMediaStorage.deleteMediaFile(context, draftNoteImage)
+                draftNoteImage = saved
+            }
+        }
+    }
 
     fun persist(updated: List<Topic>) {
         topics = updated
@@ -400,7 +404,7 @@ fun TopicNotesScreen(storageFile: File) {
                 actions = {
                     if (currentTopic != null) {
                         IconButton(onClick = { editingTopic = currentTopic }) {
-                            Icon(Icons.Default.Edit, contentDescription = "Переименовать тему")
+                            Icon(Icons.Default.Edit, contentDescription = "Изменить тему")
                         }
                         IconButton(onClick = { topicToDelete = currentTopic }) {
                             Icon(Icons.Default.DeleteOutline, contentDescription = "Удалить тему")
@@ -418,7 +422,7 @@ fun TopicNotesScreen(storageFile: File) {
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text("Темы", style = MaterialTheme.typography.labelLarge)
             Row(
@@ -429,6 +433,9 @@ fun TopicNotesScreen(storageFile: File) {
             ) {
                 topics.forEach { topic ->
                     val isSelected = topic.id == currentTopic?.id
+                    val topicBmp = remember(topic.imageFileName) {
+                        LocalMediaStorage.loadImageBitmap(context, topic.imageFileName)
+                    }
                     FilterChip(
                         selected = isSelected,
                         onClick = {
@@ -437,12 +444,23 @@ fun TopicNotesScreen(storageFile: File) {
                         },
                         label = { Text(topic.title) },
                         leadingIcon = {
-                            Icon(
-                                imageVector = topic.iconType.toImageVector(),
-                                contentDescription = null,
-                                tint = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer else topic.iconType.accent,
-                                modifier = Modifier.size(18.dp)
-                            )
+                            if (topicBmp != null) {
+                                Image(
+                                    bitmap = topicBmp,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = topic.iconType.toImageVector(),
+                                    contentDescription = null,
+                                    tint = if (isSelected) MaterialTheme.colorScheme.onSecondaryContainer else topic.iconType.accent,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     )
                 }
@@ -458,7 +476,7 @@ fun TopicNotesScreen(storageFile: File) {
                     Row {
                         if (currentSub != null) {
                             IconButton(onClick = { editingSub = currentSub }) {
-                                Icon(Icons.Default.Edit, contentDescription = "Переименовать подкатегорию", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Edit, contentDescription = "Изменить подкатегорию", modifier = Modifier.size(18.dp))
                             }
                             IconButton(onClick = { subToDelete = currentSub }) {
                                 Icon(Icons.Default.DeleteOutline, contentDescription = "Удалить подкатегорию", modifier = Modifier.size(18.dp))
@@ -479,10 +497,25 @@ fun TopicNotesScreen(storageFile: File) {
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     currentTopic.subcategories.forEach { sub ->
+                        val subBmp = remember(sub.imageFileName) {
+                            LocalMediaStorage.loadImageBitmap(context, sub.imageFileName)
+                        }
                         FilterChip(
                             selected = sub.id == currentSub?.id,
                             onClick = { selectedSubId = sub.id },
-                            label = { Text("${sub.name} (${sub.notes.size})") }
+                            label = { Text("${sub.name} (${sub.notes.size})") },
+                            leadingIcon = if (subBmp != null) {
+                                {
+                                    Image(
+                                        bitmap = subBmp,
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(18.dp)
+                                            .clip(CircleShape)
+                                    )
+                                }
+                            } else null
                         )
                     }
                 }
@@ -504,18 +537,19 @@ fun TopicNotesScreen(storageFile: File) {
                             onValueChange = { noteText = it },
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = {
-                                Text("Например: заменить фильтр, купить свёрла или записать размер...")
+                                Text("Например: заменить фильтр, приложить фото детали или схему...")
                             },
                             label = { Text("Новая заметка") },
                             minLines = 2,
                             maxLines = 4
                         )
 
+                        // Панель инструментов заметки: Напоминание, Фото, QIP-смайлы
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             AssistChip(
@@ -523,12 +557,25 @@ fun TopicNotesScreen(storageFile: File) {
                                 label = {
                                     Text(
                                         if (draftReminder != null) "🔔 ${formatTimestamp(draftReminder!!)}"
-                                        else "Напомнить по дате и времени"
+                                        else "Напомнить"
                                     )
                                 },
                                 leadingIcon = {
                                     Icon(Icons.Default.Alarm, contentDescription = null, modifier = Modifier.size(18.dp))
                                 }
+                            )
+
+                            AssistChip(
+                                onClick = { draftPhotoPicker.launch("image/*") },
+                                label = { Text(if (draftNoteImage != null) "Фото выбрано" else "Фото") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
+                                }
+                            )
+
+                            AssistChip(
+                                onClick = { showQipPanel = !showQipPanel },
+                                label = { Text("😊 QIP") }
                             )
 
                             if (draftReminder != null) {
@@ -540,16 +587,69 @@ fun TopicNotesScreen(storageFile: File) {
                                             noteText.ifBlank { "${currentTopic.title}: ${currentSub.name}" }
                                         )
                                     },
-                                    label = { Text("В будильник") },
+                                    label = { Text("Будильник") },
                                     leadingIcon = {
                                         Icon(Icons.Default.AccessAlarm, contentDescription = null, modifier = Modifier.size(18.dp))
                                     }
                                 )
                                 IconButton(
                                     onClick = { draftReminder = null },
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(30.dp)
                                 ) {
-                                    Icon(Icons.Default.Close, contentDescription = "Убрать напоминание", modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.Close, contentDescription = "Убрать напоминание", modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        }
+
+                        // Панель смайлов в стиле старого QIP
+                        if (showQipPanel) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceContainerHighest,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                QipSmilesCatalog.items.forEach { smile ->
+                                    TextButton(
+                                        onClick = { noteText += "${smile.emoji} " },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp),
+                                        modifier = Modifier.defaultMinSize(minWidth = 36.dp, minHeight = 36.dp)
+                                    ) {
+                                        Text(smile.emoji, fontSize = 20.sp)
+                                    }
+                                }
+                            }
+                        }
+
+                        // Превью прикреплённого фото
+                        if (draftNoteImage != null) {
+                            val draftBmp = remember(draftNoteImage) {
+                                LocalMediaStorage.loadImageBitmap(context, draftNoteImage)
+                            }
+                            if (draftBmp != null) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Image(
+                                        bitmap = draftBmp,
+                                        contentDescription = "Выбранное фото",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(56.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                    )
+                                    TextButton(onClick = {
+                                        LocalMediaStorage.deleteMediaFile(context, draftNoteImage)
+                                        draftNoteImage = null
+                                    }) {
+                                        Text("Убрать фото")
+                                    }
                                 }
                             }
                         }
@@ -557,12 +657,13 @@ fun TopicNotesScreen(storageFile: File) {
                         Button(
                             onClick = {
                                 val clean = noteText.trim()
-                                if (clean.isNotEmpty()) {
+                                if (clean.isNotEmpty() || draftNoteImage != null) {
                                     val newNote = NoteItem(
                                         id = UUID.randomUUID().toString(),
-                                        text = clean,
+                                        text = clean.ifEmpty { "Фото-заметка" },
                                         createdAt = System.currentTimeMillis(),
-                                        reminderAt = draftReminder
+                                        reminderAt = draftReminder,
+                                        imageFileName = draftNoteImage
                                     )
                                     val updated = topics.map { t ->
                                         if (t.id != currentTopic.id) t
@@ -583,16 +684,12 @@ fun TopicNotesScreen(storageFile: File) {
                                         )
                                         if (!exactOk) {
                                             showExactAlarmPrompt = true
-                                        } else {
-                                            Toast.makeText(
-                                                context,
-                                                "Напоминание задано на ${formatTimestamp(newNote.reminderAt)}",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
                                         }
                                     }
                                     noteText = ""
                                     draftReminder = null
+                                    draftNoteImage = null
+                                    showQipPanel = false
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()
@@ -609,6 +706,9 @@ fun TopicNotesScreen(storageFile: File) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(sortedNotes, key = { it.id }) { note ->
+                        val noteBmp = remember(note.imageFileName) {
+                            LocalMediaStorage.loadImageBitmap(context, note.imageFileName)
+                        }
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
@@ -622,7 +722,7 @@ fun TopicNotesScreen(storageFile: File) {
                                 Box(
                                     modifier = Modifier
                                         .width(5.dp)
-                                        .heightIn(min = 76.dp)
+                                        .heightIn(min = 80.dp)
                                         .background(currentTopic.iconType.accent)
                                 )
                                 Column(
@@ -652,6 +752,19 @@ fun TopicNotesScreen(storageFile: File) {
                                             else
                                                 MaterialTheme.colorScheme.onSurface,
                                             modifier = Modifier.weight(1f)
+                                        )
+                                    }
+
+                                    if (noteBmp != null && note.imageFileName != null) {
+                                        Image(
+                                            bitmap = noteBmp,
+                                            contentDescription = "Фото заметки",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(140.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { fullscreenImageName = note.imageFileName }
                                         )
                                     }
 
@@ -738,6 +851,31 @@ fun TopicNotesScreen(storageFile: File) {
         }
     }
 
+    // Полноэкранный просмотр фото из заметки
+    if (fullscreenImageName != null) {
+        val fullBmp = remember(fullscreenImageName) {
+            LocalMediaStorage.loadImageBitmap(context, fullscreenImageName)
+        }
+        AlertDialog(
+            onDismissRequest = { fullscreenImageName = null },
+            confirmButton = {
+                TextButton(onClick = { fullscreenImageName = null }) { Text("Закрыть") }
+            },
+            text = {
+                if (fullBmp != null) {
+                    Image(
+                        bitmap = fullBmp,
+                        contentDescription = "Просмотр фото",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 420.dp)
+                    )
+                }
+            }
+        )
+    }
+
     if (showExactAlarmPrompt) {
         AlertDialog(
             onDismissRequest = { showExactAlarmPrompt = false },
@@ -767,15 +905,17 @@ fun TopicNotesScreen(storageFile: File) {
             dialogTitle = "Новая тема",
             initialTitle = "",
             initialIcon = TopicIconType.LIST,
+            initialImageName = null,
             placeholder = "Например: Машина, Гараж, Дом или Участок",
             confirmLabel = "Создать",
             onDismiss = { showAddTopicDialog = false },
-            onConfirm = { title, icon ->
+            onConfirm = { title, icon, imgName ->
                 val newSub = Subcategory(id = UUID.randomUUID().toString(), name = "Общее")
                 val newTopic = Topic(
                     id = UUID.randomUUID().toString(),
                     title = title,
                     iconType = icon,
+                    imageFileName = imgName,
                     subcategories = listOf(newSub)
                 )
                 persist(topics + newTopic)
@@ -792,11 +932,17 @@ fun TopicNotesScreen(storageFile: File) {
             dialogTitle = "Изменить тему",
             initialTitle = target.title,
             initialIcon = target.iconType,
+            initialImageName = target.imageFileName,
             placeholder = "Название темы",
             confirmLabel = "Сохранить",
             onDismiss = { editingTopic = null },
-            onConfirm = { title, icon ->
-                persist(topics.map { if (it.id == target.id) it.copy(title = title, iconType = icon) else it })
+            onConfirm = { title, icon, imgName ->
+                if (target.imageFileName != null && target.imageFileName != imgName) {
+                    LocalMediaStorage.deleteMediaFile(context, target.imageFileName)
+                }
+                persist(topics.map {
+                    if (it.id == target.id) it.copy(title = title, iconType = icon, imageFileName = imgName) else it
+                })
                 editingTopic = null
             }
         )
@@ -810,6 +956,11 @@ fun TopicNotesScreen(storageFile: File) {
             text = { Text("Тема «${target.title}» и все её подкатегории и заметки будут удалены.") },
             confirmButton = {
                 TextButton(onClick = {
+                    LocalMediaStorage.deleteMediaFile(context, target.imageFileName)
+                    target.subcategories.forEach { s ->
+                        LocalMediaStorage.deleteMediaFile(context, s.imageFileName)
+                        s.notes.forEach { n -> LocalMediaStorage.deleteMediaFile(context, n.imageFileName) }
+                    }
                     val remaining = topics.filterNot { it.id == target.id }
                     persist(remaining)
                     if (selectedTopicId == target.id) {
@@ -828,11 +979,16 @@ fun TopicNotesScreen(storageFile: File) {
         SubcategoryFormDialog(
             dialogTitle = "Новая подкатегория",
             initialName = "",
+            initialImageName = null,
             placeholder = "Например: ТО, Регламент, Закупки или Дела",
             confirmLabel = "Добавить",
             onDismiss = { showAddSubDialog = false },
-            onConfirm = { name ->
-                val newSub = Subcategory(id = UUID.randomUUID().toString(), name = name)
+            onConfirm = { name, imgName ->
+                val newSub = Subcategory(
+                    id = UUID.randomUUID().toString(),
+                    name = name,
+                    imageFileName = imgName
+                )
                 persist(topics.map { t ->
                     if (t.id != currentTopic.id) t
                     else t.copy(subcategories = t.subcategories + newSub)
@@ -846,17 +1002,21 @@ fun TopicNotesScreen(storageFile: File) {
     if (editingSub != null && currentTopic != null) {
         val target = editingSub!!
         SubcategoryFormDialog(
-            dialogTitle = "Переименовать подкатегорию",
+            dialogTitle = "Изменить подкатегорию",
             initialName = target.name,
+            initialImageName = target.imageFileName,
             placeholder = "Название подкатегории",
             confirmLabel = "Сохранить",
             onDismiss = { editingSub = null },
-            onConfirm = { name ->
+            onConfirm = { name, imgName ->
+                if (target.imageFileName != null && target.imageFileName != imgName) {
+                    LocalMediaStorage.deleteMediaFile(context, target.imageFileName)
+                }
                 persist(topics.map { t ->
                     if (t.id != currentTopic.id) t
                     else t.copy(
                         subcategories = t.subcategories.map { s ->
-                            if (s.id == target.id) s.copy(name = name) else s
+                            if (s.id == target.id) s.copy(name = name, imageFileName = imgName) else s
                         }
                     )
                 })
@@ -873,6 +1033,8 @@ fun TopicNotesScreen(storageFile: File) {
             text = { Text("Подкатегория «${target.name}» и её заметки будут удалены.") },
             confirmButton = {
                 TextButton(onClick = {
+                    LocalMediaStorage.deleteMediaFile(context, target.imageFileName)
+                    target.notes.forEach { n -> LocalMediaStorage.deleteMediaFile(context, n.imageFileName) }
                     val updated = topics.map { t ->
                         if (t.id != currentTopic.id) t
                         else t.copy(subcategories = t.subcategories.filterNot { it.id == target.id })
@@ -894,6 +1056,18 @@ fun TopicNotesScreen(storageFile: File) {
         val target = editingNote!!
         var editText by remember(target.id) { mutableStateOf(target.text) }
         var editReminder by remember(target.id) { mutableStateOf(target.reminderAt) }
+        var editImageName by remember(target.id) { mutableStateOf(target.imageFileName) }
+
+        val editPhotoPicker = rememberLauncherForActivityResult(
+            contract = ActivityResultContracts.GetContent()
+        ) { uri ->
+            if (uri != null) {
+                val saved = LocalMediaStorage.copyAndCompressImage(context, uri, 1280)
+                if (saved != null) {
+                    editImageName = saved
+                }
+            }
+        }
 
         AlertDialog(
             onDismissRequest = { editingNote = null },
@@ -907,6 +1081,18 @@ fun TopicNotesScreen(storageFile: File) {
                         minLines = 2,
                         maxLines = 5
                     )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AssistChip(
+                            onClick = { editPhotoPicker.launch("image/*") },
+                            label = { Text(if (editImageName != null) "Заменить фото" else "Добавить фото") }
+                        )
+                        if (editImageName != null) {
+                            TextButton(onClick = { editImageName = null }) { Text("Удалить фото") }
+                        }
+                    }
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -932,8 +1118,15 @@ fun TopicNotesScreen(storageFile: File) {
             confirmButton = {
                 TextButton(onClick = {
                     val clean = editText.trim()
-                    if (clean.isNotEmpty()) {
-                        val updatedNote = target.copy(text = clean, reminderAt = editReminder)
+                    if (clean.isNotEmpty() || editImageName != null) {
+                        if (target.imageFileName != null && target.imageFileName != editImageName) {
+                            LocalMediaStorage.deleteMediaFile(context, target.imageFileName)
+                        }
+                        val updatedNote = target.copy(
+                            text = clean.ifEmpty { "Фото-заметка" },
+                            reminderAt = editReminder,
+                            imageFileName = editImageName
+                        )
                         updateNoteInState(target.id) { updatedNote }
                         if (updatedNote.reminderAt != null) {
                             val exactOk = scheduleNoteReminder(
@@ -965,6 +1158,7 @@ fun TopicNotesScreen(storageFile: File) {
             confirmButton = {
                 TextButton(onClick = {
                     cancelNoteReminder(context, target.id)
+                    LocalMediaStorage.deleteMediaFile(context, target.imageFileName)
                     if (currentTopic != null && currentSub != null) {
                         val updated = topics.map { t ->
                             if (t.id != currentTopic.id) t
@@ -1115,13 +1309,25 @@ private fun TopicFormDialog(
     dialogTitle: String,
     initialTitle: String,
     initialIcon: TopicIconType,
+    initialImageName: String?,
     placeholder: String,
     confirmLabel: String,
     onDismiss: () -> Unit,
-    onConfirm: (String, TopicIconType) -> Unit
+    onConfirm: (String, TopicIconType, String?) -> Unit
 ) {
+    val context = LocalContext.current
     var title by remember { mutableStateOf(initialTitle) }
     var chosenIcon by remember { mutableStateOf(initialIcon) }
+    var imageName by remember { mutableStateOf(initialImageName) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val saved = LocalMediaStorage.copyAndCompressImage(context, uri, 256)
+            if (saved != null) imageName = saved
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1135,7 +1341,7 @@ private fun TopicFormDialog(
                     placeholder = { Text(placeholder) },
                     label = { Text("Название темы") }
                 )
-                Text("Значок:", fontWeight = FontWeight.Medium)
+                Text("Стандартный значок:", fontWeight = FontWeight.Medium)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1144,8 +1350,11 @@ private fun TopicFormDialog(
                 ) {
                     TopicIconType.entries.forEach { icon ->
                         FilterChip(
-                            selected = chosenIcon == icon,
-                            onClick = { chosenIcon = icon },
+                            selected = chosenIcon == icon && imageName == null,
+                            onClick = {
+                                chosenIcon = icon
+                                imageName = null
+                            },
                             label = { Text(icon.label) },
                             leadingIcon = {
                                 Icon(icon.toImageVector(), contentDescription = null, modifier = Modifier.size(16.dp))
@@ -1153,12 +1362,25 @@ private fun TopicFormDialog(
                         )
                     }
                 }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AssistChip(
+                        onClick = { imagePicker.launch("image/*") },
+                        label = { Text(if (imageName != null) "Сменить картинку" else "Своя картинка из галереи") },
+                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    )
+                    if (imageName != null) {
+                        TextButton(onClick = { imageName = null }) { Text("Убрать") }
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = {
                 val clean = title.trim()
-                if (clean.isNotEmpty()) onConfirm(clean, chosenIcon)
+                if (clean.isNotEmpty()) onConfirm(clean, chosenIcon, imageName)
             }) { Text(confirmLabel) }
         },
         dismissButton = {
@@ -1171,29 +1393,56 @@ private fun TopicFormDialog(
 private fun SubcategoryFormDialog(
     dialogTitle: String,
     initialName: String,
+    initialImageName: String?,
     placeholder: String,
     confirmLabel: String,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit
+    onConfirm: (String, String?) -> Unit
 ) {
+    val context = LocalContext.current
     var name by remember { mutableStateOf(initialName) }
+    var imageName by remember { mutableStateOf(initialImageName) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            val saved = LocalMediaStorage.copyAndCompressImage(context, uri, 256)
+            if (saved != null) imageName = saved
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(dialogTitle) },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                singleLine = true,
-                placeholder = { Text(placeholder) },
-                label = { Text("Название подкатегории") }
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    placeholder = { Text(placeholder) },
+                    label = { Text("Название подкатегории") }
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AssistChip(
+                        onClick = { imagePicker.launch("image/*") },
+                        label = { Text(if (imageName != null) "Сменить иконку" else "Картинка из галереи") },
+                        leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    )
+                    if (imageName != null) {
+                        TextButton(onClick = { imageName = null }) { Text("Убрать") }
+                    }
+                }
+            }
         },
         confirmButton = {
             TextButton(onClick = {
                 val clean = name.trim()
-                if (clean.isNotEmpty()) onConfirm(clean)
+                if (clean.isNotEmpty()) onConfirm(clean, imageName)
             }) { Text(confirmLabel) }
         },
         dismissButton = {
@@ -1240,12 +1489,14 @@ private fun saveTopics(file: File, topics: List<Topic>) {
         tObj.put("id", t.id)
         tObj.put("title", t.title)
         tObj.put("iconType", t.iconType.name)
+        if (t.imageFileName != null) tObj.put("imageFileName", t.imageFileName)
 
         val subsArr = JSONArray()
         t.subcategories.forEach { s ->
             val sObj = JSONObject()
             sObj.put("id", s.id)
             sObj.put("name", s.name)
+            if (s.imageFileName != null) sObj.put("imageFileName", s.imageFileName)
 
             val notesArr = JSONArray()
             s.notes.forEach { n ->
@@ -1256,6 +1507,7 @@ private fun saveTopics(file: File, topics: List<Topic>) {
                 nObj.put("isDone", n.isDone)
                 nObj.put("isPinned", n.isPinned)
                 if (n.reminderAt != null) nObj.put("reminderAt", n.reminderAt)
+                if (n.imageFileName != null) nObj.put("imageFileName", n.imageFileName)
                 notesArr.put(nObj)
             }
             sObj.put("notes", notesArr)
@@ -1280,11 +1532,15 @@ private fun loadTopics(file: File): List<Topic> {
                 val iconName = tObj.optString("iconType", TopicIconType.LIST.name)
                 val iconType = runCatching { TopicIconType.valueOf(iconName) }
                     .getOrDefault(TopicIconType.LIST)
+                val tImg = if (tObj.has("imageFileName") && !tObj.isNull("imageFileName"))
+                    tObj.optString("imageFileName") else null
 
                 val subsArr = tObj.optJSONArray("subcategories") ?: JSONArray()
                 val subs = buildList {
                     for (j in 0 until subsArr.length()) {
                         val sObj = subsArr.getJSONObject(j)
+                        val sImg = if (sObj.has("imageFileName") && !sObj.isNull("imageFileName"))
+                            sObj.optString("imageFileName") else null
                         val notesArr = sObj.optJSONArray("notes") ?: JSONArray()
                         val notes = buildList {
                             for (k in 0 until notesArr.length()) {
@@ -1297,7 +1553,9 @@ private fun loadTopics(file: File): List<Topic> {
                                         isDone = nObj.optBoolean("isDone", false),
                                         isPinned = nObj.optBoolean("isPinned", false),
                                         reminderAt = if (nObj.has("reminderAt") && !nObj.isNull("reminderAt"))
-                                            nObj.optLong("reminderAt") else null
+                                            nObj.optLong("reminderAt") else null,
+                                        imageFileName = if (nObj.has("imageFileName") && !nObj.isNull("imageFileName"))
+                                            nObj.optString("imageFileName") else null
                                     )
                                 )
                             }
@@ -1306,6 +1564,7 @@ private fun loadTopics(file: File): List<Topic> {
                             Subcategory(
                                 id = sObj.getString("id"),
                                 name = sObj.getString("name"),
+                                imageFileName = sImg,
                                 notes = notes
                             )
                         )
@@ -1316,6 +1575,7 @@ private fun loadTopics(file: File): List<Topic> {
                         id = tObj.getString("id"),
                         title = tObj.getString("title"),
                         iconType = iconType,
+                        imageFileName = tImg,
                         subcategories = subs
                     )
                 )
